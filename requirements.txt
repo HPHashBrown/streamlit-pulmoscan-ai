@@ -1,0 +1,6 @@
+streamlit>=1.38
+torch>=2.3
+torchvision>=0.18
+Pillow>=10.0
+numpy>=1.26
+reportlab>=4.0
