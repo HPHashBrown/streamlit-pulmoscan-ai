@@ -15,6 +15,23 @@ free-tier 512MB) since Grad-CAM's backward pass is memory-hungry. All the
 model/inference logic (`model.py`, `predict.py`, `report.py`) is reused
 unchanged from the Flask version — only the UI layer is new.
 
+## Features
+
+- Upload PNG/JPG/JPEG **or DICOM (.dcm)** chest X-rays
+- Drag-and-drop upload (built into Streamlit's file uploader)
+- DICOM header metadata display (Patient Name/ID, Study Date, etc.) —
+  read directly from the file's structured header fields, not OCR
+- Prediction with confidence score
+- Grad-CAM heatmap toggle
+- Zoomable/pannable image viewer (scroll to zoom, drag to pan)
+- "Read my report aloud" — browser-native text-to-speech, only starts
+  on a button click, never automatically
+- Session history: a chart tracking suspicious-probability across every
+  scan you run in the current session
+- PDF report download
+- Light/dark mode (Streamlit's built-in toggle, custom brand colors)
+- Example gallery of real chest X-rays to try without your own file
+
 ## Project structure
 
 ```
@@ -25,11 +42,13 @@ streamlit-lung-ai/
 ├── model.py                  # Loads DenseNet121 + trained weights (unchanged)
 ├── predict.py                 # Preprocessing, prediction, Grad-CAM (unchanged)
 ├── report.py                   # PDF report generation (unchanged)
-├── lung_model.pth               # Trained model weights
-├── examples/                     # Sample X-rays for the "try it out" gallery
+├── dicom_utils.py                # DICOM file reading + header metadata (new)
+├── components_ui.py               # Zoom/pan viewer + read-aloud button (new)
+├── lung_model.pth                  # Trained model weights
+├── examples/                        # Sample X-rays for the "try it out" gallery
 ├── requirements.txt
 └── .streamlit/
-    └── config.toml                # Custom light/dark theme colors
+    └── config.toml                    # Custom light/dark theme colors
 ```
 
 ## Run locally
