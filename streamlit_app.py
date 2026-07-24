@@ -10,8 +10,11 @@ report.py. This file only handles the UI and page flow.
 """
 
 import base64
+import io
 import os
+from datetime import datetime
 
+import pandas as pd
 import streamlit as st
 from PIL import Image
 
@@ -23,6 +26,8 @@ from predict import (
     InvalidImageError,
 )
 from report import build_pdf_report
+from dicom_utils import is_dicom_file, load_dicom, InvalidDicomError
+from components_ui import render_zoomable_image, render_read_aloud_button
 
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "examples")
 
@@ -208,6 +213,20 @@ if "view_mode" not in st.session_state:
     st.session_state.view_mode = "Original"
 if "pdf_bytes" not in st.session_state:
     st.session_state.pdf_bytes = None
+if "is_dicom" not in st.session_state:
+    st.session_state.is_dicom = False
+if "dicom_metadata" not in st.session_state:
+    st.session_state.dicom_metadata = None
+if "dicom_original_name" not in st.session_state:
+    st.session_state.dicom_original_name = None
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+
+def _reset_result_state():
+    st.session_state.result = None
+    st.session_state.gradcam_uri = None
+    st.session_state.pdf_bytes = None
 
 
 def _select_example(filename: str):
@@ -215,10 +234,10 @@ def _select_example(filename: str):
     with open(path, "rb") as f:
         st.session_state.active_image_bytes = f.read()
     st.session_state.active_image_name = filename
-    # Clear any previous result since the image changed.
-    st.session_state.result = None
-    st.session_state.gradcam_uri = None
-    st.session_state.pdf_bytes = None
+    st.session_state.is_dicom = False
+    st.session_state.dicom_metadata = None
+    st.session_state.dicom_original_name = None
+    _reset_result_state()
 
 
 # -----------------------
@@ -226,18 +245,39 @@ def _select_example(filename: str):
 # -----------------------
 uploaded_file = st.file_uploader(
     "Upload a chest X-ray",
-    type=["png", "jpg", "jpeg"],
-    help="PNG, JPG, or JPEG \u00b7 up to 10 MB",
+    type=["png", "jpg", "jpeg", "dcm"],
+    help="PNG, JPG, JPEG, or DICOM (.dcm) \u00b7 up to 10 MB",
 )
 
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
-    if file_bytes != st.session_state.active_image_bytes:
-        st.session_state.active_image_bytes = file_bytes
-        st.session_state.active_image_name = uploaded_file.name
-        st.session_state.result = None
-        st.session_state.gradcam_uri = None
-        st.session_state.pdf_bytes = None
+    already_loaded = file_bytes == st.session_state.active_image_bytes or (
+        st.session_state.is_dicom and uploaded_file.name == st.session_state.dicom_original_name
+    )
+
+    if not already_loaded:
+        if is_dicom_file(uploaded_file.name):
+            try:
+                dicom_image, dicom_metadata = load_dicom(file_bytes)
+            except InvalidDicomError as exc:
+                st.error(str(exc))
+            else:
+                buffer = io.BytesIO()
+                dicom_image.save(buffer, format="PNG")
+                st.session_state.active_image_bytes = buffer.getvalue()
+                stem = os.path.splitext(uploaded_file.name)[0]
+                st.session_state.active_image_name = f"{stem}_converted.png"
+                st.session_state.is_dicom = True
+                st.session_state.dicom_metadata = dicom_metadata
+                st.session_state.dicom_original_name = uploaded_file.name
+                _reset_result_state()
+        else:
+            st.session_state.active_image_bytes = file_bytes
+            st.session_state.active_image_name = uploaded_file.name
+            st.session_state.is_dicom = False
+            st.session_state.dicom_metadata = None
+            st.session_state.dicom_original_name = None
+            _reset_result_state()
 
 
 # -----------------------
@@ -250,8 +290,8 @@ cols = st.columns(6)
 for i, filename in enumerate(EXAMPLE_FILES):
     with cols[i]:
         img_path = os.path.join(EXAMPLES_DIR, filename)
-        st.image(img_path, use_container_width=True)
-        if st.button(f"Sample {i + 1}", key=f"example_btn_{i}", use_container_width=True):
+        st.image(img_path, width='stretch')
+        if st.button(f"Sample {i + 1}", key=f"example_btn_{i}", width='stretch'):
             _select_example(filename)
             st.rerun()
 
@@ -263,16 +303,33 @@ st.divider()
 if st.session_state.active_image_bytes:
     preview_col, _ = st.columns([1, 1])
     with preview_col:
-        st.image(st.session_state.active_image_bytes, caption=st.session_state.active_image_name, use_container_width=True)
+        st.image(st.session_state.active_image_bytes, caption=st.session_state.active_image_name, width='stretch')
 
-    analyze_clicked = st.button("Analyze X-ray", type="primary", use_container_width=True)
+    if st.session_state.is_dicom:
+        with st.expander("\U0001FA7A Patient details (from DICOM header)"):
+            st.caption(
+                "\u26a0 This file's header may contain real patient information. "
+                "It is shown only in your current browser session and is never "
+                "stored, logged, or sent anywhere beyond this analysis."
+            )
+            if st.session_state.dicom_metadata:
+                st.table(
+                    pd.DataFrame(
+                        st.session_state.dicom_metadata.items(),
+                        columns=["Field", "Value"],
+                    ).set_index("Field")
+                )
+            else:
+                st.write("No patient metadata fields were found in this file's header.")
+
+    analyze_clicked = st.button("Analyze X-ray", type="primary", width='stretch')
     st.caption("\u26a0 For educational and research purposes only. Not a substitute for professional medical evaluation.")
 
     if analyze_clicked:
         filename = st.session_state.active_image_name or "upload.png"
 
         if not allowed_file(filename):
-            st.error("Unsupported file type. Please upload a PNG, JPG, or JPEG image.")
+            st.error("Unsupported file type. Please upload a PNG, JPG, JPEG, or DICOM image.")
         else:
             try:
                 image = load_image(st.session_state.active_image_bytes)
@@ -294,6 +351,27 @@ if st.session_state.active_image_bytes:
                         st.session_state.original_uri = original_uri
                         st.session_state.view_mode = "Original"
                         st.session_state.pdf_bytes = None
+
+                        # Suspicious-probability on a single consistent 0-100
+                        # scale, regardless of which class "won" -- makes a
+                        # sensible y-axis for the trend chart across scans.
+                        susp_prob = (
+                            result["confidence"]
+                            if result["prediction"] == "Suspicious"
+                            else round(100 - result["confidence"], 1)
+                        )
+                        display_name = (
+                            st.session_state.dicom_original_name
+                            if st.session_state.is_dicom
+                            else st.session_state.active_image_name
+                        )
+                        st.session_state.history.append({
+                            "Time": datetime.now().strftime("%H:%M:%S"),
+                            "File": display_name,
+                            "Prediction": result["prediction"],
+                            "Suspicious probability (%)": susp_prob,
+                        })
+
                         st.rerun()
 else:
     st.info("Upload an X-ray above, or pick a sample to try the classifier.")
@@ -328,7 +406,7 @@ if st.session_state.result:
             if st.session_state.view_mode == "Original"
             else st.session_state.gradcam_uri
         )
-        st.image(shown_uri, use_container_width=True)
+        render_zoomable_image(shown_uri, height=360)
 
     with summary_col:
         badge_icon = "\u2705" if prediction == "Normal" else "\u26a0\ufe0f"
@@ -396,8 +474,33 @@ if st.session_state.result:
         data=st.session_state.pdf_bytes,
         file_name="pulmoscan-ai-report.pdf",
         mime="application/pdf",
-        use_container_width=True,
+        width='stretch',
     )
+
+    st.write("")
+    report_text = (
+        f"Analysis result: {prediction}, with {confidence} percent model confidence. "
+        f"{EXPLANATIONS[prediction]}"
+    )
+    render_read_aloud_button(report_text)
+
+
+# -----------------------
+# Session history / trend chart
+# -----------------------
+if st.session_state.history:
+    st.divider()
+    st.markdown("#### Session history")
+    st.caption(
+        "Suspicious-probability across the scans you've run this session "
+        "(resets when you close or reload the app)."
+    )
+
+    history_df = pd.DataFrame(st.session_state.history)
+    chart_df = history_df[["Suspicious probability (%)"]].copy()
+    chart_df.index = [f"Scan {i + 1}" for i in range(len(history_df))]
+    st.line_chart(chart_df, height=220)
+    st.dataframe(history_df, width='stretch', hide_index=True)
 
 st.markdown(
     '<div class="footer-note">PulmoScan AI &mdash; an educational demonstration project. Not for clinical use.</div>',
