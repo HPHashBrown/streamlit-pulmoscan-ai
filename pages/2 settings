@@ -1,0 +1,86 @@
+ings · PY
+"""
+pages/2_Settings.py
+ 
+Session-scoped preferences (not persisted across visits -- this app
+doesn't have user accounts or a database, so "settings" here means
+"defaults for this browser session," reset on reload).
+"""
+ 
+import streamlit as st
+ 
+st.set_page_config(page_title="Settings \u2014 PulmoScan AI", page_icon="\u2699\ufe0f", layout="centered")
+ 
+st.title("\u2699\ufe0f Settings")
+st.caption(
+    "These preferences apply to your current session only \u2014 they reset "
+    "when you close or reload the app (this app doesn't use accounts or a "
+    "database, so nothing is saved beyond your browser session)."
+)
+ 
+_DEFAULTS = {
+    "settings_alpha": 0.45,
+    "settings_default_threshold": 0,
+    "settings_default_bbox": False,
+    "settings_default_mode": "Original",
+    "settings_default_zoom_pct": 100,
+    "settings_flicker_ms": 600,
+}
+for _key, _val in _DEFAULTS.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _val
+ 
+st.divider()
+st.markdown("#### Heatmap defaults")
+ 
+st.session_state.settings_alpha = st.slider(
+    "Default heatmap opacity", 0.1, 0.9, st.session_state.settings_alpha, step=0.05,
+    help="How strongly the Grad-CAM heatmap is blended over the X-ray.",
+)
+st.session_state.settings_default_threshold = st.slider(
+    "Default heatmap threshold (%)", 0, 95, st.session_state.settings_default_threshold,
+    help="Starting sensitivity for new analyses \u2014 you can still adjust it per-scan.",
+)
+st.session_state.settings_default_bbox = st.checkbox(
+    "Show bounding box by default", value=st.session_state.settings_default_bbox,
+)
+ 
+st.divider()
+st.markdown("#### Viewer defaults")
+ 
+st.session_state.settings_default_mode = st.selectbox(
+    "Default viewer mode",
+    ["Original", "Grad-CAM", "Side-by-side", "Split slider", "Flicker"],
+    index=["Original", "Grad-CAM", "Side-by-side", "Split slider", "Flicker"].index(
+        st.session_state.settings_default_mode
+    ),
+)
+st.session_state.settings_default_zoom_pct = st.slider(
+    "Default zoom level (%)", 50, 300, st.session_state.settings_default_zoom_pct, step=10,
+)
+st.session_state.settings_flicker_ms = st.slider(
+    "Flicker mode speed (ms per frame)", 200, 1500, st.session_state.settings_flicker_ms, step=50,
+    help="Lower = faster alternation between Original and Grad-CAM in Flicker mode.",
+)
+ 
+st.divider()
+st.markdown("#### Theme")
+st.info(
+    "Light/dark mode is controlled by Streamlit's own built-in toggle: "
+    "click the **\u22ee** menu in the top-right corner \u2192 **Settings** \u2192 **Theme**."
+)
+ 
+st.divider()
+st.markdown("#### Report format")
+st.caption(
+    "PDF is currently the only report download format. You can also export "
+    "a PNG snapshot of exactly what's on screen (including annotations) "
+    "using the **Export PNG** button in the image viewer on the main page."
+)
+ 
+st.divider()
+if st.button("Reset all settings to defaults"):
+    for key, val in _DEFAULTS.items():
+        st.session_state[key] = val
+    st.rerun()
+ 
