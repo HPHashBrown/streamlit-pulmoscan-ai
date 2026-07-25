@@ -31,10 +31,38 @@ METADATA_FIELDS = [
     ("PatientBirthDate", "Patient Birth Date"),
     ("PatientSex", "Patient Sex"),
     ("StudyDate", "Study Date"),
+    ("AcquisitionDate", "Acquisition Date"),
     ("Modality", "Modality"),
     ("InstitutionName", "Institution"),
     ("BodyPartExamined", "Body Part Examined"),
 ]
+
+
+def get_pixel_spacing_mm(file_bytes: bytes):
+    """
+    Return the DICOM PixelSpacing (mm per pixel, as a single average of
+    row/column spacing) if present, else None. Used to let the ruler
+    tool show real-world distances instead of just pixel counts.
+
+    Note: the returned value is in the *original* DICOM pixel grid; since
+    the app resizes images to 224x224 for the model/display, callers
+    must scale this by (original_size / 224) to stay accurate at the
+    resolution actually being measured on screen.
+    """
+    try:
+        dataset = pydicom.dcmread(io.BytesIO(file_bytes))
+        spacing = getattr(dataset, "PixelSpacing", None)
+        rows = getattr(dataset, "Rows", None)
+        if spacing and len(spacing) >= 2:
+            avg_spacing = (float(spacing[0]) + float(spacing[1])) / 2
+            if rows:
+                # Scale from original resolution to the 224x224 the
+                # viewer actually displays and measures on.
+                return avg_spacing * (float(rows) / 224.0)
+            return avg_spacing
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def is_dicom_file(filename: str) -> bool:
