@@ -466,19 +466,15 @@ if st.session_state.result:
     # --- Viewer controls ---
     control_col1, control_col2, control_col3 = st.columns([1.3, 1, 1])
     with control_col1:
-        st.session_state.viewer_mode = st.selectbox(
-            "Viewer mode", VIEWER_MODES,
-            index=VIEWER_MODES.index(st.session_state.viewer_mode)
-            if st.session_state.viewer_mode in VIEWER_MODES else 0,
-        )
+        st.selectbox("Viewer mode", VIEWER_MODES, key="viewer_mode")
     with control_col2:
-        st.session_state.heatmap_threshold_pct = st.slider(
-            "Heatmap threshold", 0, 95, st.session_state.heatmap_threshold_pct,
+        st.slider(
+            "Heatmap threshold", 0, 95, key="heatmap_threshold_pct",
             help="Higher = only the strongest activated regions are highlighted.",
         )
     with control_col3:
-        st.session_state.show_bbox = st.checkbox(
-            "Show bounding box", value=st.session_state.show_bbox,
+        st.checkbox(
+            "Show bounding box", key="show_bbox",
             help="Outline the region above the current threshold.",
         )
 
@@ -504,13 +500,6 @@ if st.session_state.result:
 
     # --- Result badge + confidence breakdown ---
     badge_icon = "\u2705" if prediction == "Normal" else "\u26a0\ufe0f"
-    st.markdown(
-        f"""
-        <div class="result-card {css_class}">
-            <div class="result-badge">{badge_icon} {prediction}</div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     probs = result.get("probabilities", {prediction: confidence})
     bar_colors = {"Normal": "#22A878", "Suspicious": "#D97A2C"}
@@ -524,7 +513,16 @@ if st.session_state.result:
             <div class="conf-bar-pct">{pct}%</div>
         </div>
         """
-    st.markdown(bars_html + "</div>", unsafe_allow_html=True)
+
+    st.markdown(
+        f"""
+        <div class="result-card {css_class}">
+            <div class="result-badge">{badge_icon} {prediction}</div>
+            {bars_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.caption(
         "\u26a0 This AI is intended only for educational and research "
