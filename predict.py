@@ -11,7 +11,7 @@ import base64
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image, ImageDraw, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFilter, UnidentifiedImageError
 from torchvision import transforms
 
 from model import CLASS_NAMES
@@ -94,21 +94,98 @@ def predict_image(model, device, image: Image.Image) -> dict:
     }
 
 
+# Thresholds calibrated against the app's own real chest X-ray examples
+# (which score ~30-70 blur variance, 0 colorfulness, 57-71 contrast at
+# 224x224) versus synthetic bad inputs (blurred images drop to ~1,
+# color photos show colorfulness well over 100, flat/blank images have
+# ~0 contrast). Wide safety margins were kept on both sides.
+_BLUR_VARIANCE_MIN = 8.0
+_COLORFULNESS_MAX = 20.0
+_CONTRAST_MIN = 15.0
+
+
+def _laplacian_variance(gray_image: Image.Image) -> float:
+    """
+    Blur measure: variance of the image's Laplacian (edge response).
+    Sharp images have lots of high-frequency edge detail -> high
+    variance; blurry images have smoothed-out edges -> low variance.
+    """
+    laplacian = gray_image.filter(
+        ImageFilter.Kernel((3, 3), [0, 1, 0, 1, -4, 1, 0, 1, 0], scale=1)
+    )
+    arr = np.array(laplacian, dtype=np.float64)
+    # PIL's kernel filter leaves the outer 1px border unprocessed (raw
+    # passthrough), which would otherwise skew the variance with an
+    # artifact unrelated to actual sharpness.
+    return float(arr[1:-1, 1:-1].var()) if arr.shape[0] > 2 and arr.shape[1] > 2 else 0.0
+
+
+def _colorfulness(rgb_image: Image.Image) -> float:
+    """
+    How far an image is from grayscale, via mean pairwise channel
+    difference. Chest X-rays (even saved as RGB/JPEG) are essentially
+    colorless; ordinary photos are not.
+    """
+    arr = np.array(rgb_image.convert("RGB")).astype(np.float64)
+    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+    return float(np.mean(np.abs(r - g)) + np.mean(np.abs(r - b)) + np.mean(np.abs(g - b)))
+
+
 def check_image_quality(image: Image.Image) -> dict:
     """
-    A few cheap, genuine sanity checks on the uploaded image -- not a
-    medical quality check, just basic technical adequacy for the model
-    (resolution, aspect ratio). Used to populate the "Quality verified"
-    step of the analysis checklist honestly rather than as a fake delay.
+    Heuristic checks on the uploaded image -- NOT a trained "is this an
+    X-ray" classifier (no such model exists here), just cheap signal
+    combining blur, grayscale-ness, and contrast. Calibrated against
+    this app's own example X-rays vs. synthetic bad inputs; genuine
+    edge cases (e.g. an unusually flat or colorized X-ray) could still
+    be misjudged, so this is a helpful guardrail, not a guarantee.
+
+    Returns ok/warnings (informational, analysis still proceeds) and
+    is_valid/blocking_reasons (analysis should NOT proceed).
     """
     width, height = image.size
     warnings = []
+    blocking_reasons = []
+
     if width < 100 or height < 100:
         warnings.append("Image resolution is very low; results may be less reliable.")
+
     aspect_ratio = width / height if height else 0
     if aspect_ratio < 0.5 or aspect_ratio > 2.0:
         warnings.append("Unusual aspect ratio for a chest X-ray.")
-    return {"ok": len(warnings) == 0, "warnings": warnings, "size": (width, height)}
+
+    resized = image.resize((224, 224))
+    gray = resized.convert("L")
+
+    blur_score = _laplacian_variance(gray)
+    if blur_score < _BLUR_VARIANCE_MIN:
+        blocking_reasons.append(
+            "This image looks too blurry to analyze reliably."
+        )
+
+    color_score = _colorfulness(resized)
+    if color_score > _COLORFULNESS_MAX:
+        blocking_reasons.append(
+            "This doesn't look like a chest X-ray (it appears to be a color "
+            "photo rather than a grayscale radiograph)."
+        )
+
+    contrast_score = float(np.array(gray, dtype=np.float64).std())
+    if contrast_score < _CONTRAST_MIN:
+        blocking_reasons.append(
+            "This image doesn't have enough contrast/detail to look like a chest X-ray."
+        )
+
+    return {
+        "ok": len(warnings) == 0,
+        "warnings": warnings,
+        "is_valid": len(blocking_reasons) == 0,
+        "blocking_reasons": blocking_reasons,
+        "size": (width, height),
+        "blur_score": round(blur_score, 1),
+        "color_score": round(color_score, 1),
+        "contrast_score": round(contrast_score, 1),
+    }
 
 
 def _colorize(heatmap: np.ndarray) -> np.ndarray:
