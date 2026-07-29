@@ -237,6 +237,7 @@ _DEFAULTS = {
     "settings_default_mode": "Original",
     "settings_default_zoom_pct": 100,
     "settings_flicker_ms": 600,
+    "uploader_key_version": 0,
 }
 for _key, _val in _DEFAULTS.items():
     if _key not in st.session_state:
@@ -261,6 +262,12 @@ def _select_example(filename: str):
     st.session_state.dicom_metadata = None
     st.session_state.dicom_original_name = None
     st.session_state.dicom_pixel_spacing = None
+    # Force the file uploader widget to reset. Without this, a
+    # previously-uploaded file stays "sticky" in the uploader's own
+    # internal state and silently re-asserts itself (overwriting this
+    # example selection) on the very next rerun, since a widget without
+    # a fresh key keeps returning its last-selected file.
+    st.session_state.uploader_key_version += 1
     _reset_result_state()
 
 
@@ -271,6 +278,7 @@ uploaded_file = st.file_uploader(
     "Upload a chest X-ray",
     type=["png", "jpg", "jpeg", "dcm"],
     help="PNG, JPG, JPEG, or DICOM (.dcm) \u00b7 up to 10 MB",
+    key=f"file_uploader_{st.session_state.uploader_key_version}",
 )
 
 if uploaded_file is not None:
@@ -379,71 +387,82 @@ if st.session_state.active_image_bytes:
                     time.sleep(0.15)
 
                     quality = check_image_quality(image)
-                    if quality["ok"]:
-                        st.write("\u2705 Quality verified")
+
+                    if not quality["is_valid"]:
+                        st.write("\u274c Quality check failed")
+                        status.update(label="Couldn't analyze this image", state="error", expanded=True)
+                        for reason in quality["blocking_reasons"]:
+                            st.error(reason)
+                        st.warning(
+                            "Please upload a clear, unmodified chest X-ray image "
+                            "\u2014 or try one of the sample X-rays below instead."
+                        )
                     else:
-                        st.write("\u26a0\ufe0f Quality check: " + "; ".join(quality["warnings"]))
-                    time.sleep(0.15)
+                        if quality["ok"]:
+                            st.write("\u2705 Quality verified")
+                        else:
+                            st.write("\u26a0\ufe0f Quality check: " + "; ".join(quality["warnings"]))
+                        time.sleep(0.15)
 
-                    try:
-                        result, raw_cam = predict_with_gradcam(model, device, image)
-                        st.write("\u2705 Lung regions analyzed")
+                        try:
+                            result, raw_cam = predict_with_gradcam(model, device, image)
+                            st.write("\u2705 Lung regions analyzed")
 
-                        default_uri = render_gradcam_overlay(
-                            raw_cam, image,
-                            threshold=st.session_state.settings_default_threshold / 100,
-                            alpha=st.session_state.settings_alpha,
-                        )
-                        st.write("\u2705 Heatmap generated")
+                            default_uri = render_gradcam_overlay(
+                                raw_cam, image,
+                                threshold=st.session_state.settings_default_threshold / 100,
+                                alpha=st.session_state.settings_alpha,
+                            )
+                            st.write("\u2705 Heatmap generated")
 
-                        mime = "image/png" if filename.lower().endswith("png") else "image/jpeg"
-                        encoded = base64.b64encode(st.session_state.active_image_bytes).decode("utf-8")
-                        original_uri = f"data:{mime};base64,{encoded}"
+                            mime = "image/png" if filename.lower().endswith("png") else "image/jpeg"
+                            encoded = base64.b64encode(st.session_state.active_image_bytes).decode("utf-8")
+                            original_uri = f"data:{mime};base64,{encoded}"
 
-                        pdf_buffer = build_pdf_report(
-                            prediction=result["prediction"],
-                            confidence=result["confidence"],
-                            image_data_uri=original_uri,
-                            gradcam_data_uri=default_uri,
-                            explanation=EXPLANATIONS[result["prediction"]],
-                        )
-                        pdf_bytes = pdf_buffer.read()
-                        st.write("\u2705 Report generated")
+                            pdf_buffer = build_pdf_report(
+                                prediction=result["prediction"],
+                                confidence=result["confidence"],
+                                image_data_uri=original_uri,
+                                gradcam_data_uri=default_uri,
+                                explanation=EXPLANATIONS[result["prediction"]],
+                            )
+                            pdf_bytes = pdf_buffer.read()
+                            st.write("\u2705 Report generated")
 
-                    except Exception:  # noqa: BLE001
-                        status.update(label="Analysis failed", state="error")
-                        st.error("Something went wrong while analyzing this image. Please try again.")
-                    else:
-                        status.update(label="Analysis complete", state="complete")
+                        except Exception:  # noqa: BLE001
+                            status.update(label="Analysis failed", state="error", expanded=True)
+                            st.error("Something went wrong while analyzing this image. Please try again.")
+                        else:
+                            status.update(label="Analysis complete", state="complete")
 
-                        st.session_state.result = result
-                        st.session_state.raw_cam = raw_cam
-                        st.session_state.original_uri = original_uri
-                        st.session_state.pdf_bytes = pdf_bytes
-                        st.session_state.viewer_mode = st.session_state.settings_default_mode
-                        st.session_state.heatmap_threshold_pct = st.session_state.settings_default_threshold
-                        st.session_state.show_bbox = st.session_state.settings_default_bbox
+                            st.session_state.result = result
+                            st.session_state.raw_cam = raw_cam
+                            st.session_state.original_uri = original_uri
+                            st.session_state.pdf_bytes = pdf_bytes
+                            st.session_state.viewer_mode = st.session_state.settings_default_mode
+                            st.session_state.heatmap_threshold_pct = st.session_state.settings_default_threshold
+                            st.session_state.show_bbox = st.session_state.settings_default_bbox
 
-                        susp_prob = (
-                            result["confidence"]
-                            if result["prediction"] == "Suspicious"
-                            else round(100 - result["confidence"], 1)
-                        )
-                        display_name = (
-                            st.session_state.dicom_original_name
-                            if st.session_state.is_dicom
-                            else st.session_state.active_image_name
-                        )
-                        st.session_state.history.append({
-                            "Time": datetime.now().strftime("%H:%M:%S"),
-                            "File": display_name,
-                            "Prediction": result["prediction"],
-                            "Suspicious probability (%)": susp_prob,
-                            "Favorite": False,
-                            "Notes": "",
-                        })
+                            susp_prob = (
+                                result["confidence"]
+                                if result["prediction"] == "Suspicious"
+                                else round(100 - result["confidence"], 1)
+                            )
+                            display_name = (
+                                st.session_state.dicom_original_name
+                                if st.session_state.is_dicom
+                                else st.session_state.active_image_name
+                            )
+                            st.session_state.history.append({
+                                "Time": datetime.now().strftime("%H:%M:%S"),
+                                "File": display_name,
+                                "Prediction": result["prediction"],
+                                "Suspicious probability (%)": susp_prob,
+                                "Favorite": False,
+                                "Notes": "",
+                            })
 
-                        st.rerun()
+                            st.rerun()
 else:
     st.info("Upload an X-ray above, or pick a sample to try the classifier.")
 
